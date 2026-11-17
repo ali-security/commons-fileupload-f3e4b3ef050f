@@ -1,0 +1,64 @@
+name: seal-build
+
+# Upstream Apache Commons FileUpload 1.3.2 ships no GitHub Actions CI; this
+# workflow reproduces the release build (Maven, JDK 8 per the published
+# manifest's Build-Jdk 1.8.0_65, source/target 1.5) and runs the project's
+# JUnit suite via surefire.
+
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "Surefire -Dtest selector; empty runs the full suite"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "8"
+
+      - name: Install Maven 3.3.9
+        run: |
+          curl -fsSL https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.3.9/apache-maven-3.3.9-bin.tar.gz -o /tmp/maven.tgz
+          tar -xzf /tmp/maven.tgz -C /opt
+          echo "/opt/apache-maven-3.3.9/bin" >> "$GITHUB_PATH"
+
+      - name: Build and test
+        run: |
+          set -e
+          SKIPS="-Drat.skip=true -Dcheckstyle.skip=true -Dfindbugs.skip=true -Dpmd.skip=true -Dcpd.skip=true -Dclirr.skip=true -Danimal.sniffer.skip=true -Djapicmp.skip=true -Djacoco.skip=true -Dcobertura.skip=true -Dmaven.javadoc.skip=true -Dmaven.source.skip=true -Dgpg.skip=true -Dassembly.skipAssembly=true"
+          # -Prelease: commons-parent 40 binds maven-jar-plugin:test-jar only in the release profile
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            mvn -B -V -e clean package -Prelease $SKIPS -Dtest='${{ inputs.test-filter }}' -DfailIfNoTests=false
+          else
+            mvn -B -V -e clean package -Prelease $SKIPS
+          fi
+
+      - name: Test report
+        if: always()
+        run: |
+          echo "=== Surefire per-class results ==="
+          for f in target/surefire-reports/*.txt; do [ -f "$f" ] && sed -n '4p' "$f"; done
+          echo "=== Skipped tests (with reasons) ==="
+          grep -h -B1 "<skipped" target/surefire-reports/TEST-*.xml || echo "No skipped tests."
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p release-out
+          cp target/commons-fileupload-1.3.2.jar target/commons-fileupload-1.3.2-tests.jar release-out/
+          ls -l release-out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: commons-fileupload-jars
+          path: release-out/*.jar
+          if-no-files-found: error
